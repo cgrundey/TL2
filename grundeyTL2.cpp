@@ -79,11 +79,9 @@ void tx_begin() {
 void tx_abort() {
   list<Acct>::iterator iterator;
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator)
-    pthread_mutex_unlock(&(myLocks[iterator->addr]));
-    //TODO: UNLOCK(myLocks[iterator->addr], /*VER???*/);
+    UNLOCK(myLocks[iterator->addr], GET_VERSION(myLocks[iterator->addr]));
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator)
-    pthread_mutex_unlock(&(myLocks[iterator->addr]));
-    //TODO: UNLOCK(myLocks[iterator->addr], /*VER???*/);
+    UNLOCK(myLocks[iterator->addr], GET_VERSION(myLocks[iterator->addr]));
   __sync_fetch_and_add(&abort_count, 1);
   throw "Transaction ABORTED";
 }
@@ -104,8 +102,9 @@ int tx_read(int addr) {
   CFENCE;
   v2 = accts[addr].ver;
 
-  if (v2 <= rv && v1 == v2 && lock(addr) == 0) {
+  if (v2 <= rv && v1 == v2 && TRY_LOCK(myLocks[addr]) == 0) {
     read_set.push_back(accts[addr]);
+    UNLOCK(myLocks[addr], /*VER???*/); //TODO: UNLOCK(lock, new_ver)
     return accts[addr].value;
   }
   else
@@ -113,10 +112,7 @@ int tx_read(int addr) {
 }
 /* Adds a version of the account at addr to write_set with the given value. */
 bool tx_write(int addr, int val) {
-  Acct temp;
-  temp.addr = addr;
-  temp.value = val;
-  temp.ver = accts[addr].ver;
+  Acct temp = {addr, val, accts[addr].ver);
   write_set.push_back(temp);
 }
 /* Attempts to commit the transaction. Checks read and write set versions
@@ -127,22 +123,21 @@ void tx_commit() {
   list<Acct>::iterator iterator;
   /* Validate write_set */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
-    if (!pthread_mutex_trylock(&(myLocks[iterator->addr])))
+    if (!TRY_LOCK(myLocks[iterator->addr]))
       tx_abort();
   }
-  //TODO: wv = Atomic_inc(global_clock) __sync_fetch_and_add(&wv, 1);
+  wv = __sync_fetch_and_add(&wv, 1); //TODO: Atomic_inc(global_clock)????
 
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
-    if (iterator->ver > rv || pthread_mutex_trylock(&(myLocks[iterator->addr])))
+    if (iterator->ver > rv || TRY_LOCK(myLocks[iterator->addr]))
       tx_abort();
   }
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
     accts[iterator->addr].value = iterator->value;
     accts[iterator->addr].ver = wv;
-    pthread_mutex_unlock(&(myLocks[iterator->addr]));
-    //TODO: UNLOCK(myLocks[iterator->addr], /*VER???*/);
+    UNLOCK(myLocks[iterator->addr], /*VER???*/); // TODO: Version??
   }
 }
 
