@@ -1,11 +1,12 @@
 /**
 * Software Transactional Memory 2
+* Disjoint threads
 *
 * Author: Colin Grundey
 * Date: February 26, 2018
 *
 * Compile:
-*   g++ grundeyTL2.cpp -o TL2 -lpthread
+*   g++ grundeyTL2disjoint.cpp -o TL2disjoint -lpthread
 *   add -g option for gdb
 */
 
@@ -122,7 +123,7 @@ void tx_commit() {
 			tx_abort();
 		}
   }
-  wv = __sync_fetch_and_add(&global_clock, 1); 
+  wv = __sync_fetch_and_add(&global_clock, 1);
 
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
