@@ -32,8 +32,6 @@
 #define CFENCE  __asm__ volatile ("":::"memory")
 #define MFENCE  __asm__ volatile ("mfence":::"memory")
 
-// volatile unsigned int lock;
-
 #define IS_LOCKED(lock) lock & 1 == 1
 
 #define UNLOCK(lock, new_ver) lock = new_ver << 1
@@ -61,11 +59,12 @@ volatile unsigned int myLocks[NUM_ACCTS];
 int numThreads;
 thread_local list<Acct> read_set;
 thread_local list<Acct> write_set;
-thread_local long rv; //TODO: LONG????
-thread_local long wv; //TODO: LONG??? THREAD_LOCAL???
-long global_clock; //TODO: LONG????
+thread_local long rv = 0;
+thread_local long wv = 0;
+long global_clock = 0;
 
 static volatile long abort_count = 0;
+static volatile long commit_count = 0;
 
 /* Where a transaction begins. Read and write sets are intialized and cleared. */
 void tx_begin() {
@@ -105,35 +104,40 @@ int tx_read(int addr) {
     read_set.push_back(temp);
     return the_val;
   }
-  else
+  else {
     tx_abort();
+	}
 }
 
-bool tx_write(int addr, int val) {
+void tx_write(int addr, int val) {
   Acct temp = {addr, val};
   write_set.push_back(temp);
 }
 /* Attempts to commit the transaction */
 void tx_commit() {
-  //TODO: TRY_LOCK(myLocks[iterator->addr]);
   list<Acct>::iterator iterator;
   /* Validate write_set */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
-    if (TRY_LOCK(myLocks[iterator->addr]))
-      tx_abort();
+    if (TRY_LOCK(myLocks[iterator->addr])) {
+			tx_abort();
+		} 
   }
-  wv = __sync_fetch_and_add(&global_clock, 1); //TODO: Atomic_inc(global_clock)????
+  wv = __sync_fetch_and_add(&global_clock, 1); 
 
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
-    if (GET_VERSION(myLocks[iterator->addr]) > rv || TRY_LOCK(myLocks[iterator->addr]))
+    if (GET_VERSION(myLocks[iterator->addr]) > rv || TRY_LOCK(myLocks[iterator->addr])) {
       tx_abort();
+		}
   }
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
     accts[iterator->addr] = iterator->value;
-    UNLOCK(myLocks[iterator->addr], wv); // TODO: Version??
+    UNLOCK(myLocks[iterator->addr], wv);
   }
+	for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
+		UNLOCK(myLocks[iterator->addr], GET_VERSION(myLocks[iterator->addr]));
+	}
 }
 
 inline unsigned long long get_real_time() {
@@ -177,6 +181,7 @@ void* th_run(void * args)
             r1 = rand_r_32(&tid) % NUM_ACCTS; // rand() % NUM_ACCTS;
             r2 = rand_r_32(&tid) % NUM_ACCTS; // rand() % NUM_ACCTS;
           }
+
           // Perform the transfer
           int a1 = tx_read(r1);
           if (a1 < TRFR_AMT)
@@ -187,10 +192,11 @@ void* th_run(void * args)
           tx_commit();
         }
       } catch(const char* msg) {
-        //printf("%s\n", msg);
+        // printf("%s\n", msg);
         aborted = true;
       }
     } while (aborted);
+		printf("This is a good sign\n"); // Doesn't seem to get here...
 // _________________END__________________
   }
   return 0;
@@ -211,9 +217,8 @@ int main(int argc, char* argv[]) {
   printf("Number of threads: %d\n", numThreads);
 
   // Initializing 1,000,000 accounts with $1000 each
-  for (int i = 0; i < NUM_ACCTS; i++) {
+  for (int i = 0; i < NUM_ACCTS; i++)
     accts[i] = INIT_BALANCE;
-  }
 
   long totalMoneyBefore = 0;
   for (int i = 0; i < NUM_ACCTS; i++)
