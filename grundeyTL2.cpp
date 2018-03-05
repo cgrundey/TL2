@@ -28,7 +28,6 @@
 #include <errno.h>
 
 #include "rand_r_32.h"
-#include "versioned lock.cpp"
 
 #define CFENCE  __asm__ volatile ("":::"memory")
 #define MFENCE  __asm__ volatile ("mfence":::"memory")
@@ -55,17 +54,16 @@ using namespace std;
 typedef struct {
   int addr;
   int value;
-  int ver;
 } Acct;
 
-vector<Acct> accts;
+int accts[NUM_ACCTS];
 volatile unsigned int myLocks[NUM_ACCTS];
 int numThreads;
 thread_local list<Acct> read_set;
 thread_local list<Acct> write_set;
-thread_local int rv; //TODO: LONG????
-thread_local int wv; //TODO: LONG??? THREAD_LOCAL???
-int global_clock; //TODO: LONG????
+thread_local long rv; //TODO: LONG????
+thread_local long wv; //TODO: LONG??? THREAD_LOCAL???
+long global_clock; //TODO: LONG????
 
 static volatile long abort_count = 0;
 
@@ -96,48 +94,45 @@ int tx_read(int addr) {
     }
   } // Must be in memory (i.e. vector of Accts)
   int v1, v2, the_val;
-  v1 = accts[addr].ver;
+  v1 = GET_VERSION(myLocks[addr]);
   CFENCE;
-  the_val = accts[addr].value;
+  the_val = accts[addr];
   CFENCE;
-  v2 = accts[addr].ver;
+  v2 = GET_VERSION(myLocks[addr]);
 
   if (v2 <= rv && v1 == v2 && TRY_LOCK(myLocks[addr]) == 0) {
-    read_set.push_back(accts[addr]);
-    UNLOCK(myLocks[addr], /*VER???*/); //TODO: UNLOCK(lock, new_ver)
-    return accts[addr].value;
+		Acct temp = {addr, accts[addr]};
+    read_set.push_back(temp);
+    return the_val;
   }
   else
     tx_abort();
 }
-/* Adds a version of the account at addr to write_set with the given value. */
+
 bool tx_write(int addr, int val) {
-  Acct temp = {addr, val, accts[addr].ver);
+  Acct temp = {addr, val};
   write_set.push_back(temp);
 }
-/* Attempts to commit the transaction. Checks read and write set versions
- * and compares it to memory versions (i.e. accts[].ver). If valid, all
- * accounts in read and write sets are written back to memory. */
+/* Attempts to commit the transaction */
 void tx_commit() {
   //TODO: TRY_LOCK(myLocks[iterator->addr]);
   list<Acct>::iterator iterator;
   /* Validate write_set */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
-    if (!TRY_LOCK(myLocks[iterator->addr]))
+    if (TRY_LOCK(myLocks[iterator->addr]))
       tx_abort();
   }
-  wv = __sync_fetch_and_add(&wv, 1); //TODO: Atomic_inc(global_clock)????
+  wv = __sync_fetch_and_add(&global_clock, 1); //TODO: Atomic_inc(global_clock)????
 
   /* Validate read_set */
   for (iterator = read_set.begin(); iterator != read_set.end(); ++iterator) {
-    if (iterator->ver > rv || TRY_LOCK(myLocks[iterator->addr]))
+    if (GET_VERSION(myLocks[iterator->addr]) > rv || TRY_LOCK(myLocks[iterator->addr]))
       tx_abort();
   }
   /* Validation is a success */
   for (iterator = write_set.begin(); iterator != write_set.end(); ++iterator) {
-    accts[iterator->addr].value = iterator->value;
-    accts[iterator->addr].ver = wv;
-    UNLOCK(myLocks[iterator->addr], /*VER???*/); // TODO: Version??
+    accts[iterator->addr] = iterator->value;
+    UNLOCK(myLocks[iterator->addr], wv); // TODO: Version??
   }
 }
 
@@ -160,6 +155,7 @@ void barrier(int which) {
 void* th_run(void * args)
 {
   long id = (long)args;
+	unsigned int tid = (unsigned int)id;
   barrier(0);
   srand((unsigned)time(0));
 
@@ -178,8 +174,8 @@ void* th_run(void * args)
         int r2 = 0;
         for (int j = 0; j < 10; j++) {
           while (r1 == r2) {
-            r1 = rand_r_32() % NUM_ACCTS; // rand() % NUM_ACCTS;
-            r2 = rand_r_32() % NUM_ACCTS; // rand() % NUM_ACCTS;
+            r1 = rand_r_32(&tid) % NUM_ACCTS; // rand() % NUM_ACCTS;
+            r2 = rand_r_32(&tid) % NUM_ACCTS; // rand() % NUM_ACCTS;
           }
           // Perform the transfer
           int a1 = tx_read(r1);
@@ -191,7 +187,7 @@ void* th_run(void * args)
           tx_commit();
         }
       } catch(const char* msg) {
-        // printf("%s\n", msg);
+        //printf("%s\n", msg);
         aborted = true;
       }
     } while (aborted);
@@ -216,13 +212,12 @@ int main(int argc, char* argv[]) {
 
   // Initializing 1,000,000 accounts with $1000 each
   for (int i = 0; i < NUM_ACCTS; i++) {
-    Acct temp = {i, INIT_BALANCE, 0};
-    accts.push_back(temp);
+    accts[i] = INIT_BALANCE;
   }
 
   long totalMoneyBefore = 0;
   for (int i = 0; i < NUM_ACCTS; i++)
-    totalMoneyBefore += accts[i].value;
+    totalMoneyBefore += accts[i];
 
   // Initialize locks
   for (int i = 0; i < NUM_ACCTS; i++)
@@ -247,12 +242,9 @@ int main(int argc, char* argv[]) {
     pthread_join(client_th[i], NULL);
   }
 /* EXECUTION END */
-  for (int i = 0; i < NUM_ACCTS; i++) {
-    pthread_mutex_destroy(&myLocks[i]);
-  }
   long totalMoneyAfter = 0;
   for (int i = 0; i < NUM_ACCTS; i++)
-    totalMoneyAfter += accts[i].value;
+    totalMoneyAfter += accts[i];
 
   //printf("Total transfers: %d\n", actual_transfers);
   printf("\nTotal time = %lld ns\n", get_real_time() - start);
